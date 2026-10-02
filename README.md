@@ -95,3 +95,7 @@ Feedback and issues welcome.
 
 The board is not isolated from mains. Never connect a USB-UART adapter, programmer or computer while it is
 powered from 230 V. Flash and test the logic on 3.3 V only.
+
+## License
+
+[MIT](LICENSE)
