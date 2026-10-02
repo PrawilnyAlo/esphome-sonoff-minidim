@@ -1,0 +1,506 @@
+# Sonoff MINI-DIM (Matter) with a replaced ESP32-C3
+# Component and protocol: https://github.com/PrawilnyAlo/esphome-sonoff-minidim
+#
+# On-board button (released after holding):
+#   click        - toggle light
+#   3 clicks     - next switch mode (LED blinks 3x)
+#   hold 5 s     - restart
+#   hold 10 s    - auto calibration (LED breathes)
+#   hold 15 s    - factory reset of HC32 and ESPHome (LED blinks 5x)
+# LED: on = connected to Home Assistant, short blink every 2 s = not connected.
+# S1 / S2 are 230 V inputs (through a divider), hence invert + delayed_off.
+
+substitutions:
+  name: minidim
+  friendly_name: Mini-Dim
+
+  hc32_rx_pin: GPIO19
+  hc32_tx_pin: GPIO18
+
+  button_pin: GPIO9
+  s1_pin: GPIO4
+  s2_pin: GPIO5
+  hc32_reset_pin: GPIO10
+  led_pin: GPIO3
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://PrawilnyAlo/esphome-sonoff-minidim
+    components: [sonoff_minidim]
+
+logger:
+  hardware_uart: UART0
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: ${friendly_name} Fallback Hotspot
+
+captive_portal:
+
+uart:
+  id: hc32_uart
+  rx_pin: ${hc32_rx_pin}
+  tx_pin: ${hc32_tx_pin}
+  baud_rate: 115200
+
+sonoff_minidim:
+  id: minidim
+  uart_id: hc32_uart
+  update_interval: 60s
+  reset_pin: ${hc32_reset_pin}
+  reset_on_boot: false
+  power:
+    id: power_w
+    name: Power
+  voltage:
+    name: Voltage
+  current:
+    name: Current
+  level:
+    name: HC32 Level
+  calibration_min:
+    name: Calibration Min
+  calibration_max:
+    name: Calibration Max
+  calibration_progress:
+    id: cal_progress
+    name: Calibration Progress
+    on_value:
+      - lambda: |-
+          if (x >= 100) id(calibrating) = false;
+
+globals:
+  - id: calibrating
+    type: bool
+    initial_value: "false"
+  - id: led_mode
+    type: int
+    initial_value: "-1"
+  - id: led_busy
+    type: bool
+    initial_value: "false"
+  - id: fade_up
+    type: bool
+    initial_value: "true"
+  - id: s1_fading
+    type: bool
+    initial_value: "false"
+  - id: s2_fading
+    type: bool
+    initial_value: "false"
+
+script:
+  - id: led_update
+    then:
+      - lambda: |-
+          if (id(led_busy)) return;
+          int mode;
+          if (id(calibrating)) mode = 3;
+          else if (api::global_api_server != nullptr && api::global_api_server->is_connected()) mode = 1;
+          else mode = 2;
+          if (mode == id(led_mode)) return;
+          id(led_mode) = mode;
+          auto call = id(status_led).turn_on();
+          call.set_brightness(1.0);
+          call.set_transition_length(0);
+          if (mode == 1) call.set_effect("None");
+          else if (mode == 2) call.set_effect("Disconnected");
+          else call.set_effect("Calibration");
+          call.perform();
+
+  - id: led_blink
+    mode: restart
+    parameters:
+      count: int
+    then:
+      - lambda: id(led_busy) = true;
+      - light.turn_off:
+          id: status_led
+          transition_length: 0s
+      - delay: 300ms
+      - repeat:
+          count: !lambda return count;
+          then:
+            - light.turn_on:
+                id: status_led
+                brightness: 100%
+                effect: None
+            - delay: 120ms
+            - light.turn_off:
+                id: status_led
+                transition_length: 0s
+            - delay: 120ms
+      - delay: 300ms
+      - lambda: |-
+          id(led_busy) = false;
+          id(led_mode) = -1;
+      - script.execute: led_update
+
+  - id: start_calibration
+    then:
+      - lambda: |-
+          id(calibrating) = true;
+          id(minidim).start_auto_calibration();
+      - script.execute: led_update
+      - delay: 4min
+      - lambda: id(calibrating) = false;
+      - script.execute: led_update
+
+  - id: s1_hold
+    then:
+      - delay: 500ms
+      - lambda: |-
+          bool up;
+          if (id(switch_mode).active_index().value_or(0) == 2) {
+            up = true;
+          } else {
+            up = !id(dimmer).current_values.is_on() ? true : !id(fade_up);
+            id(fade_up) = up;
+          }
+          id(s1_fading) = true;
+          id(minidim).start_fade(up, (uint8_t) std::max(0L, std::min(255L, lroundf(id(fade_time).state / 0.25f) - 1)));
+
+  - id: s2_hold
+    then:
+      - delay: 500ms
+      - lambda: |-
+          id(s2_fading) = true;
+          id(minidim).start_fade(false, (uint8_t) std::max(0L, std::min(255L, lroundf(id(fade_time).state / 0.25f) - 1)));
+
+interval:
+  - interval: 1s
+    then:
+      - script.execute: led_update
+
+sensor:
+  - platform: wifi_signal
+    name: WiFi Signal
+    entity_category: diagnostic
+    update_interval: 90s
+  - platform: uptime
+    name: Uptime
+    entity_category: diagnostic
+    update_interval: 300s
+  - platform: total_daily_energy
+    name: Energy Today
+    power_id: power_w
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+light:
+  - platform: sonoff_minidim
+    id: dimmer
+    name: Light
+    default_transition_length: 0s
+    gamma_correct: 1.0
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: monochromatic
+    id: status_led
+    name: Status LED
+    internal: true
+    output: status_led_output
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
+    effects:
+      - strobe:
+          name: Disconnected
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 150ms
+            - state: false
+              duration: 1850ms
+      - pulse:
+          name: Calibration
+          transition_length: 1s
+          update_interval: 1s
+
+output:
+  - platform: ledc
+    id: status_led_output
+    pin:
+      number: ${led_pin}
+      inverted: true
+
+number:
+  - platform: template
+    id: transition_time
+    name: Transition Time
+    entity_category: config
+    unit_of_measurement: s
+    min_value: 0.25
+    max_value: 10
+    step: 0.25
+    initial_value: 2
+    optimistic: true
+    restore_value: true
+    on_value:
+      - lambda: id(minidim).set_transition(x);
+
+  - platform: template
+    id: fade_time
+    name: Switch Fade Time
+    entity_category: config
+    unit_of_measurement: s
+    min_value: 1
+    max_value: 60
+    step: 0.25
+    initial_value: 5
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    id: cal_min
+    name: Manual Calibration Min
+    entity_category: config
+    min_value: 1
+    max_value: 254
+    step: 1
+    initial_value: 2
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    id: cal_max
+    name: Manual Calibration Max
+    entity_category: config
+    min_value: 2
+    max_value: 255
+    step: 1
+    initial_value: 255
+    optimistic: true
+    restore_value: true
+
+select:
+  - platform: template
+    id: switch_mode
+    name: Switch Mode
+    entity_category: config
+    options:
+      - "Rocker switch"
+      - "1 momentary button"
+      - "2 momentary buttons"
+    initial_option: "Rocker switch"
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: Dimming Type
+    entity_category: config
+    options: ["Leading edge", "Trailing edge"]
+    initial_option: "Trailing edge"
+    optimistic: true
+    restore_value: true
+    on_value:
+      - lambda: id(minidim).set_dimming_type(i);
+
+  - platform: template
+    name: Load Type
+    entity_category: config
+    options: ["Auto", "Dimmable LED", "Incandescent / Halogen", "ELV"]
+    initial_option: "Auto"
+    optimistic: true
+    restore_value: true
+    on_value:
+      - lambda: |-
+          static const uint8_t codes[] = {0, 1, 3, 4};
+          id(minidim).set_load_type(codes[i]);
+
+button:
+  - platform: template
+    name: Auto Calibration
+    entity_category: config
+    on_press:
+      - script.execute: start_calibration
+
+  - platform: template
+    name: Save Manual Calibration
+    entity_category: config
+    on_press:
+      - lambda: id(minidim).write_calibration((uint8_t) id(cal_min).state, (uint8_t) id(cal_max).state);
+
+  - platform: template
+    name: Reset HC32 Settings
+    entity_category: config
+    disabled_by_default: true
+    on_press:
+      - lambda: id(minidim).factory_reset_hc32();
+
+  - platform: restart
+    id: restart_button
+    name: Restart
+
+  - platform: factory_reset
+    id: esphome_factory_reset
+    name: Factory Reset
+    disabled_by_default: true
+
+binary_sensor:
+  - platform: gpio
+    id: device_button
+    pin:
+      number: ${button_pin}
+      mode: INPUT_PULLUP
+      inverted: true
+    internal: true
+    on_multi_click:
+      - timing:
+          - ON for at most 1s
+          - OFF for at most 0.5s
+          - ON for at most 1s
+          - OFF for at most 0.5s
+          - ON for at most 1s
+          - OFF for at least 0.5s
+        then:
+          - select.next:
+              id: switch_mode
+              cycle: true
+          - script.execute:
+              id: led_blink
+              count: 3
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.5s
+        then:
+          - light.toggle: dimmer
+      - timing:
+          - ON for 5s to 9.5s
+          - OFF for at least 0.1s
+        then:
+          - button.press: restart_button
+      - timing:
+          - ON for 10s to 14.5s
+          - OFF for at least 0.1s
+        then:
+          - script.execute: start_calibration
+      - timing:
+          - ON for at least 15s
+          - OFF for at least 0.1s
+        then:
+          - script.execute:
+              id: led_blink
+              count: 5
+          - lambda: id(minidim).factory_reset_hc32();
+          - delay: 3s
+          - button.press: esphome_factory_reset
+
+  - platform: gpio
+    id: s1
+    name: S1
+    internal: true
+    pin:
+      number: ${s1_pin}
+      mode: INPUT
+    filters:
+      - invert:
+      - delayed_off: 50ms
+      - delayed_on: 20ms
+    on_press:
+      - if:
+          condition:
+            lambda: return millis() < 5000;
+          then:
+            - logger.log: "S1 at boot - ignored"
+          else:
+            - if:
+                condition:
+                  lambda: return id(switch_mode).active_index().value_or(0) == 0;
+                then:
+                  - light.toggle: dimmer
+                else:
+                  - script.execute: s1_hold
+    on_release:
+      - if:
+          condition:
+            lambda: return millis() < 5000;
+          then:
+            - logger.log: "S1 at boot - ignored"
+          else:
+            - if:
+                condition:
+                  lambda: return id(switch_mode).active_index().value_or(0) == 0;
+                then:
+                  - light.toggle: dimmer
+                else:
+                  - if:
+                      condition:
+                        script.is_running: s1_hold
+                      then:
+                        - script.stop: s1_hold
+                        - if:
+                            condition:
+                              lambda: return id(switch_mode).active_index().value_or(0) == 2;
+                            then:
+                              - light.turn_on: dimmer
+                            else:
+                              - light.toggle: dimmer
+                      else:
+                        - if:
+                            condition:
+                              lambda: return id(s1_fading);
+                            then:
+                              - lambda: |-
+                                  id(s1_fading) = false;
+                                  id(minidim).stop_fade();
+
+  - platform: gpio
+    id: s2
+    name: S2
+    internal: true
+    pin:
+      number: ${s2_pin}
+      mode: INPUT
+    filters:
+      - invert:
+      - delayed_off: 50ms
+      - delayed_on: 20ms
+    on_press:
+      - if:
+          condition:
+            lambda: return millis() > 5000 && id(switch_mode).active_index().value_or(0) == 2;
+          then:
+            - script.execute: s2_hold
+    on_release:
+      - if:
+          condition:
+            lambda: return millis() > 5000 && id(switch_mode).active_index().value_or(0) == 2;
+          then:
+            - if:
+                condition:
+                  script.is_running: s2_hold
+                then:
+                  - script.stop: s2_hold
+                  - light.turn_off: dimmer
+                else:
+                  - if:
+                      condition:
+                        lambda: return id(s2_fading);
+                      then:
+                        - lambda: |-
+                            id(s2_fading) = false;
+                            id(minidim).stop_fade();
