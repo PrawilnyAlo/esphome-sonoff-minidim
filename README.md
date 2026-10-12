@@ -69,7 +69,8 @@ A full configuration with the button, LED, switch modes and calibration controls
 id(minidim).set_transition(2.0);            // fade time in seconds, 0.25 s steps
 id(minidim).set_dimming_type(1);            // 0 leading edge, 1 trailing edge
 id(minidim).set_load_type(0);               // 0 auto, 1 LED, 3 incandescent/halogen, 4 ELV
-id(minidim).start_fade(true, 0x13);         // fade up (false = down), rate byte = seconds / 0.25 - 1
+id(minidim).start_fade_seconds(true, 5.0);  // fade up (false = down) over 5 s, until stop_fade()
+id(minidim).start_fade(true, 0x13);         // same with the raw byte: seconds / 0.25 - 1
 id(minidim).stop_fade();
 id(minidim).start_auto_calibration();
 id(minidim).write_calibration(40, 230);     // manual min / max

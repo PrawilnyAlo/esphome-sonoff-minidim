@@ -176,14 +176,14 @@ script:
             id(fade_up) = up;
           }
           id(s1_fading) = true;
-          id(minidim).start_fade(up, (uint8_t) std::max(0L, std::min(255L, lroundf(id(fade_time).state / 0.25f) - 1)));
+          id(minidim).start_fade_seconds(up, id(fade_time).state);
 
   - id: s2_hold
     then:
       - delay: 500ms
       - lambda: |-
           id(s2_fading) = true;
-          id(minidim).start_fade(false, (uint8_t) std::max(0L, std::min(255L, lroundf(id(fade_time).state / 0.25f) - 1)));
+          id(minidim).start_fade_seconds(false, id(fade_time).state);
 
 interval:
   - interval: 1s

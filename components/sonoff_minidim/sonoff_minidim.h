@@ -38,6 +38,7 @@ class SonoffMiniDim : public PollingComponent, public uart::UARTDevice {
   void set_level(uint8_t level, uint8_t transition);
   void set_raw_level(uint8_t level);
   void start_fade(bool up, uint8_t rate);
+  void start_fade_seconds(bool up, float seconds) { this->start_fade(up, seconds_to_time_byte(seconds)); }
   void stop_fade();
   void set_dimming_type(uint8_t type);  // 0 = leading edge, 1 = trailing edge
   void set_load_type(uint8_t type);     // 0 auto, 1 LED, 3 żarówka/halogen, 4 ELV
@@ -59,6 +60,8 @@ class SonoffMiniDim : public PollingComponent, public uart::UARTDevice {
     uint8_t tries;
   };
 
+  // Czas przejścia w bajcie B6: czas = (n + 1) * 0,25 s
+  static uint8_t seconds_to_time_byte(float seconds);
   static std::vector<uint8_t> build_(uint8_t cmd, const std::vector<uint8_t> &data);
   void send_now_(uint8_t cmd, const std::vector<uint8_t> &data);
   void enqueue_(uint8_t cmd, const std::vector<uint8_t> &data, bool replace = false);

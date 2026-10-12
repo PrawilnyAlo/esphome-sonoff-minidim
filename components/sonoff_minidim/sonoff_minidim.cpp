@@ -294,10 +294,12 @@ void SonoffMiniDim::set_load_type(uint8_t type) {
     this->enqueue_(CMD_LOAD_TYPE, {type}, true);
 }
 
-void SonoffMiniDim::set_transition(float seconds) {
+uint8_t SonoffMiniDim::seconds_to_time_byte(float seconds) {
   const long n = lroundf(seconds / 0.25f) - 1;
-  this->transition_ = static_cast<uint8_t>(std::max(0L, std::min(255L, n)));
+  return static_cast<uint8_t>(std::max(0L, std::min(255L, n)));
 }
+
+void SonoffMiniDim::set_transition(float seconds) { this->transition_ = seconds_to_time_byte(seconds); }
 
 void SonoffMiniDim::start_auto_calibration() {
   if (this->ready_) {
